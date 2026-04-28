@@ -99,8 +99,35 @@ export async function stop({ _deps } = {}) {
   if (!started) {
     return { success: true, action: 'already_stopped' };
   }
-  await evaluate(`${rp}.stopReplay()`);
-  return { success: true, action: 'replay_stopped' };
+  try {
+    await evaluate(`${rp}.stopReplay()`);
+  } catch (err) {
+    if (err?.message && /not started|Replay is not started/i.test(err.message)) {
+      return { success: true, action: 'already_stopped' };
+    }
+    throw err;
+  }
+  let stopped = false;
+  for (let i = 0; i < 10; i++) {
+    await new Promise(r => setTimeout(r, 250));
+    stopped = !(await evaluate(wv(`${rp}.isReplayStarted()`)));
+    if (stopped) break;
+  }
+  if (!stopped) {
+    for (const method of ['goToRealtime', 'leaveReplay', 'hideReplayToolbar']) {
+      try { await evaluate(`${rp}.${method}()`); } catch {}
+    }
+    stopped = !(await evaluate(wv(`${rp}.isReplayStarted()`)));
+  }
+  if (!stopped) {
+    return {
+      success: false,
+      action: 'stop_failed',
+      replay_started: true,
+      error: 'TradingView accepted the replay stop request but still reports replay mode active.',
+    };
+  }
+  return { success: true, action: 'replay_stopped', replay_started: false };
 }
 
 export async function trade({ action, _deps }) {

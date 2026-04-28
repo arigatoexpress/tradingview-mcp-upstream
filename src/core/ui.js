@@ -50,6 +50,11 @@ export async function openPanel({ panel, action }) {
           performed = 'opened';
         } else if (action === 'close' || (action === 'toggle' && isOpen)) {
           if (typeof bwb.hideWidget === 'function') bwb.hideWidget(widgetName);
+          else if (typeof bwb._hideWidget === 'function') bwb._hideWidget(widgetName);
+          else if (typeof bwb.close === 'function') bwb.close();
+          else if (typeof bwb.hide === 'function') bwb.hide();
+          else if (typeof bwb.toggleWidget === 'function' && isOpen) bwb.toggleWidget(widgetName);
+          else return { error: 'No supported method to close bottom widget: ' + widgetName };
           performed = 'closed';
         }
         return { was_open: isOpen, performed: performed };
@@ -217,21 +222,32 @@ export async function hover({ by, value }) {
 }
 
 export async function scroll({ direction, amount }) {
-  const c = await getClient();
   const px = amount || 300;
-  const center = await evaluate(`
+  const result = await evaluate(`
     (function() {
       var el = document.querySelector('[data-name="pane-canvas"]') || document.querySelector('[class*="chart-container"]') || document.querySelector('canvas');
-      if (!el) return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      if (!el) el = document.scrollingElement || document.documentElement || document.body;
+      if (!el) return { error: 'No scroll target found' };
       var rect = el.getBoundingClientRect();
-      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      var direction = ${JSON.stringify(direction)};
+      var amount = ${JSON.stringify(px)};
+      var deltaX = 0, deltaY = 0;
+      if (direction === 'up') deltaY = -amount; else if (direction === 'down') deltaY = amount;
+      else if (direction === 'left') deltaX = -amount; else if (direction === 'right') deltaX = amount;
+      var event = new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaX: deltaX,
+        deltaY: deltaY,
+        clientX: rect.x + rect.width / 2,
+        clientY: rect.y + rect.height / 2
+      });
+      el.dispatchEvent(event);
+      return { x: event.clientX, y: event.clientY, deltaX: deltaX, deltaY: deltaY, target: el.tagName.toLowerCase() };
     })()
   `);
-  let deltaX = 0, deltaY = 0;
-  if (direction === 'up') deltaY = -px; else if (direction === 'down') deltaY = px;
-  else if (direction === 'left') deltaX = -px; else if (direction === 'right') deltaX = px;
-  await c.Input.dispatchMouseEvent({ type: 'mouseWheel', x: center.x, y: center.y, deltaX, deltaY });
-  return { success: true, direction, amount: px };
+  if (result && result.error) throw new Error(result.error);
+  return { success: true, direction, amount: px, dispatched: result };
 }
 
 export async function mouseClick({ x, y, button, double_click }) {
