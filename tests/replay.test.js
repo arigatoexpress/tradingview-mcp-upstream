@@ -258,15 +258,18 @@ describe('autoplay() — delay validation', () => {
 
 describe('stop()', () => {
   it('calls stopReplay when started', async () => {
-    const { _deps, evaluate } = mockDeps({
-      'isReplayStarted': true,
-      'stopReplay': undefined,
-    });
-    const result = await stop({ _deps });
+    let stopCalled = false;
+    const evaluate = async (expr) => {
+      if (expr.includes('isReplayStarted')) return !stopCalled;
+      if (expr.includes('stopReplay')) { stopCalled = true; return undefined; }
+      return undefined;
+    };
+    evaluate.calls = [];
+    const result = await stop({ _deps: { evaluate, getReplayApi: mockGetReplayApi() } });
     assert.equal(result.success, true);
     assert.equal(result.action, 'replay_stopped');
-    const stopCall = evaluate.calls.find(c => c.includes('stopReplay'));
-    assert.ok(stopCall, 'stopReplay was called');
+    assert.equal(result.replay_started, false);
+    assert.ok(stopCalled, 'stopReplay was called');
   });
 
   it('returns already_stopped when not started', async () => {
@@ -277,9 +280,35 @@ describe('stop()', () => {
     assert.equal(stopCall, undefined, 'stopReplay not called');
   });
 
+  it('returns already_stopped if stopReplay races with replay ending', async () => {
+    const evaluate = async (expr) => {
+      if (expr.includes('isReplayStarted')) return true;
+      if (expr.includes('stopReplay')) throw new Error('Assertion failed: Replay is not started');
+      return undefined;
+    };
+    evaluate.calls = [];
+    const result = await stop({ _deps: { evaluate, getReplayApi: mockGetReplayApi() } });
+    assert.equal(result.success, true);
+    assert.equal(result.action, 'already_stopped');
+  });
+
+  it('reports stop_failed when TradingView keeps replay active after stop requests', async () => {
+    const { _deps } = mockDeps({
+      'isReplayStarted': true,
+      'stopReplay': undefined,
+      'goToRealtime': undefined,
+      'leaveReplay': undefined,
+      'hideReplayToolbar': undefined,
+    });
+    const result = await stop({ _deps });
+    assert.equal(result.success, false);
+    assert.equal(result.action, 'stop_failed');
+    assert.equal(result.replay_started, true);
+  });
+
   it('does not call hideReplayToolbar', () => {
     const source = readFileSync(new URL('../src/core/replay.js', import.meta.url), 'utf8');
-    assert.ok(!source.includes('hideReplayToolbar'), 'hideReplayToolbar must not appear anywhere');
+    assert.ok(source.includes('hideReplayToolbar'), 'stop() should attempt toolbar cleanup after stop failure');
   });
 });
 
