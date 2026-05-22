@@ -6,51 +6,76 @@ import { evaluate, evaluateAsync, getClient } from '../connection.js';
 
 export async function get() {
   // Try internal API first — reads from the active watchlist widget
-  const symbols = await evaluate(`
-    (function() {
+  const symbols = await evaluateAsync(`
+    (async function() {
       // Method 1: Try the watchlist widget's internal data
       try {
         var rightArea = document.querySelector('[class*="layout__area--right"]');
         if (!rightArea || rightArea.offsetWidth < 50) return { symbols: [], source: 'panel_closed' };
       } catch(e) {}
 
-      // Method 2: Read data-symbol-full attributes from watchlist rows
-      var results = [];
-      var seen = {};
       var container = document.querySelector('[class*="layout__area--right"]');
       if (!container) return { symbols: [], source: 'no_container' };
 
-      // Find all elements with symbol data attributes
-      var symbolEls = container.querySelectorAll('[data-symbol-full]');
-      for (var i = 0; i < symbolEls.length; i++) {
-        var sym = symbolEls[i].getAttribute('data-symbol-full');
-        if (!sym || seen[sym]) continue;
-        seen[sym] = true;
+      var scroller = container.querySelector('[class*="scroll"], [class*="widgetbar-widget"]') || container;
+      var results = [];
+      var seen = {};
 
-        // Find the row and extract price data
-        var row = symbolEls[i].closest('[class*="row"]') || symbolEls[i].parentElement;
-        var cells = row ? row.querySelectorAll('[class*="cell"], [class*="column"]') : [];
-        var nums = [];
-        for (var j = 0; j < cells.length; j++) {
-          var t = cells[j].textContent.trim();
-          if (t && /^[\\-+]?[\\d,]+\\.?\\d*%?$/.test(t.replace(/[\\s,]/g, ''))) nums.push(t);
+      function getSymbols() {
+        var symbolEls = container.querySelectorAll('[data-symbol-full]');
+        for (var i = 0; i < symbolEls.length; i++) {
+          var sym = symbolEls[i].getAttribute('data-symbol-full');
+          if (!sym || seen[sym]) continue;
+          seen[sym] = true;
+          
+          var row = symbolEls[i].closest('[class*="row"]') || symbolEls[i].parentElement;
+          var cells = row ? row.querySelectorAll('[class*="cell"], [class*="column"]') : [];
+          var nums = [];
+          for (var j = 0; j < cells.length; j++) {
+            var t = cells[j].textContent.trim();
+            if (t && /^[\\-+]?[\\d,]+\\.?\\d*%?$/.test(t.replace(/[\\s,]/g, ''))) nums.push(t);
+          }
+          results.push({ symbol: sym, last: nums[0] || null, change: nums[1] || null, change_percent: nums[2] || null });
         }
-        results.push({ symbol: sym, last: nums[0] || null, change: nums[1] || null, change_percent: nums[2] || null });
       }
-
-      if (results.length > 0) return { symbols: results, source: 'data_attributes' };
 
       // Method 3: Scan for ticker-like text in the right panel
-      var items = container.querySelectorAll('[class*="symbolName"], [class*="tickerName"], [class*="symbol-"]');
-      for (var k = 0; k < items.length; k++) {
-        var text = items[k].textContent.trim();
-        if (text && /^[A-Z][A-Z0-9.:!]{0,20}$/.test(text) && !seen[text]) {
-          seen[text] = true;
-          results.push({ symbol: text, last: null, change: null, change_percent: null });
+      function getTextSymbols() {
+        var items = container.querySelectorAll('[class*="symbolName"], [class*="tickerName"], [class*="symbol-"]');
+        for (var k = 0; k < items.length; k++) {
+          var text = items[k].textContent.trim();
+          if (text && /^[A-Z][A-Z0-9.:!]{0,20}$/.test(text) && !seen[text]) {
+            seen[text] = true;
+            results.push({ symbol: text, last: null, change: null, change_percent: null });
+          }
         }
       }
 
-      return { symbols: results, source: results.length > 0 ? 'text_scan' : 'empty' };
+      if (scroller.scrollTo) scroller.scrollTo(0, 0);
+      await new Promise(r => setTimeout(r, 200));
+
+      getSymbols();
+      getTextSymbols();
+
+      var lastLen = 0;
+      var sameCount = 0;
+      for (var k = 0; k < 30; k++) {
+        if (scroller.scrollBy) scroller.scrollBy(0, 400);
+        await new Promise(r => setTimeout(r, 200));
+        getSymbols();
+        getTextSymbols();
+        if (results.length === lastLen) {
+          sameCount++;
+          if (sameCount >= 3) break;
+        } else {
+          sameCount = 0;
+          lastLen = results.length;
+        }
+      }
+
+      if (scroller.scrollTo) scroller.scrollTo(0, 0);
+
+      return { symbols: results, source: results.length > 0 ? 'scrolled_dom' : 'empty' };
     })()
   `);
 
